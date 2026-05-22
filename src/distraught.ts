@@ -16,6 +16,9 @@ interface DistraughtOptions {
     /** Target rendered size of the model in scene units (default: 8) */
     modelSize?: number;
 
+    /** Disable mouse/touch/keyboard controls - useful when GSAP drives the camera (default: false) */
+    interactive?: boolean;
+
     /** Called with 0–100 during load */
     onProgress?: (percent: number) => void;
 
@@ -26,48 +29,53 @@ interface DistraughtOptions {
     onError?: (err: Error) => void;
 }
 
-// Constants
-const DEFAULT_CAMERA_PHI = Math.PI / 2.6;
-const PAN_DRAG_SPEED = 0.0003;
-const SHIFT_WHEEL_PAN_SPEED = 0.00045;
-const ORBIT_SMOOTH = 0.12;
-const ZOOM_SMOOTH = 0.10;
+const DEFAULT_THETA       = Math.PI / 4;
+const DEFAULT_CAMERA_PHI  = Math.PI / 2.6;
+const PAN_DRAG_SPEED      = 0.0003;
+const SHIFT_WHEEL_PAN     = 0.00045;
+const ORBIT_SMOOTH        = 0.12;
+const ZOOM_SMOOTH         = 0.10;
+const PHI_MIN             = 0.05;
+const PHI_MAX             = Math.PI / 2 - 0.02;
 
 // Distraught
 export default class Distraught {
     // Three.js core
-    private scene!: THREE.Scene;
-    private camera!: THREE.PerspectiveCamera;
+    private scene!:    THREE.Scene;
+    private camera!:   THREE.PerspectiveCamera;
     private renderer!: THREE.WebGLRenderer;
-    private model: THREE.Object3D | null = null;
+    private model:     THREE.Object3D | null = null;
 
     // Scene helpers
-    private ground!: THREE.Mesh;
-    private grid!: THREE.GridHelper;
+    private ground!:        THREE.Mesh;
+    private grid!:          THREE.GridHelper;
     private contactShadow!: THREE.Mesh;
 
     // Camera state
-    private cameraTheta = Math.PI / 4;
-    private cameraPhi = DEFAULT_CAMERA_PHI;
-    private targetTheta = Math.PI / 4;
-    private targetPhi = DEFAULT_CAMERA_PHI;
+    private cameraTheta    = DEFAULT_THETA;
+    private cameraPhi      = DEFAULT_CAMERA_PHI;
+    private targetTheta    = DEFAULT_THETA;
+    private targetPhi      = DEFAULT_CAMERA_PHI;
     private cameraDistance = 20;
     private targetDistance = 20;
-    private minDistance = 5;
-    private maxDistance = 100;
-    private panTarget = new THREE.Vector3();
+    private minDistance    = 5;
+    private maxDistance    = 100;
+    private panTarget      = new THREE.Vector3();
+
+    // Controls toggle
+    private _interactive = true;
 
     // Pointer state
-    private isPointerDown = false;
-    private isPanning = false;
+    private isPointerDown  = false;
+    private isPanning      = false;
     private isShiftPressed = false;
     private activePointer: number | null = null;
-    private lastPointerX = 0;
-    private lastPointerY = 0;
+    private lastPointerX   = 0;
+    private lastPointerY   = 0;
 
     // Touch state
-    private touchMode: 'orbit' | 'zoom' | null = null;
-    private lastPinchDist = 0;
+    private touchMode:     'orbit' | 'zoom' | null = null;
+    private lastPinchDist  = 0;
 
     // Lifecycle
     private rafId: number | null = null;
@@ -75,16 +83,19 @@ export default class Distraught {
         Omit<DistraughtOptions, 'onProgress' | 'onLoad' | 'onError'>
     > & Pick<DistraughtOptions, 'onProgress' | 'onLoad' | 'onError'>;
 
-    // constructor 
+    // constructor
     constructor(options: DistraughtOptions) {
         this.opts = {
-            modelSize: 8,
-            mtlFile: '',
-            onProgress: undefined,
-            onLoad: undefined,
-            onError: undefined,
+            modelSize:   8,
+            mtlFile:     '',
+            interactive: true,
+            onProgress:  undefined,
+            onLoad:      undefined,
+            onError:     undefined,
             ...options,
         };
+
+        this._interactive = this.opts.interactive;
 
         this.initScene();
         this.initLights();
@@ -96,25 +107,60 @@ export default class Distraught {
 
     // Public API
 
-    /** Smoothly reset camera to default angle */
+    /** Smooth camera reset */
     resetView(): this {
-        this.targetTheta = Math.PI / 4;
-        this.targetPhi = DEFAULT_CAMERA_PHI;
+        this.targetTheta = DEFAULT_THETA;
+        this.targetPhi   = DEFAULT_CAMERA_PHI;
         this.panTarget.set(0, 0, 0);
         return this;
     }
 
-    /** Immediately set camera theta/phi (radians). Fluent. */
+    /** Smooth orbit - goes through internal lerp (for manual UI controls) */
     setAngle(theta: number, phi: number): this {
         this.targetTheta = theta;
-        this.targetPhi = Math.max(0.05, Math.min(Math.PI / 2 - 0.02, phi));
+        this.targetPhi   = Math.max(PHI_MIN, Math.min(PHI_MAX, phi));
         return this;
     }
 
-    /** Set zoom distance directly */
+    /** Smooth zoom - goes through internal lerp */
     setDistance(d: number): this {
         this.targetDistance = Math.max(this.minDistance, Math.min(this.maxDistance, d));
         return this;
+    }
+
+    // GSAP / ScrollTrigger direct setters (no lerp, GSAP owns easing)
+
+    /** Direct - bypasses lerp. Use with GSAP ticker. */
+    setAngleDirect(theta: number, phi: number): this {
+        this.cameraTheta = this.targetTheta = theta;
+        this.cameraPhi   = this.targetPhi   = Math.max(PHI_MIN, Math.min(PHI_MAX, phi));
+        return this;
+    }
+
+    /** Direct - bypasses lerp. Use with GSAP ticker. */
+    setDistanceDirect(d: number): this {
+        this.cameraDistance = this.targetDistance = Math.max(this.minDistance, Math.min(this.maxDistance, d));
+        return this;
+    }
+
+    /** Direct - bypasses lerp. Use with GSAP ticker. */
+    setPanDirect(x: number, y: number, z: number): this {
+        this.panTarget.set(x, y, z);
+        return this;
+    }
+
+    // Utility
+
+    /** Enable or disable mouse/touch/keyboard controls at runtime */
+    setInteractive(enabled: boolean): this {
+        this._interactive = enabled;
+        return this;
+    }
+
+    /** Capture current frame as a data URL - useful for thumbnails / OG images */
+    screenshot(type = 'image/png', quality = 1.0): string {
+        this.renderer.render(this.scene, this.camera);
+        return this.renderer.domElement.toDataURL(type, quality);
     }
 
     /** Replace the current model. Returns a Promise that resolves when done. */
@@ -132,9 +178,9 @@ export default class Distraught {
         if (this.rafId !== null) cancelAnimationFrame(this.rafId);
         this.renderer.domElement.remove();
         this.renderer.dispose();
-        window.removeEventListener('resize', this._onResize);
+        window.removeEventListener('resize',  this._onResize);
         window.removeEventListener('keydown', this._onKeyDown);
-        window.removeEventListener('keyup', this._onKeyUp);
+        window.removeEventListener('keyup',   this._onKeyUp);
     }
 
     // Scene init
@@ -150,14 +196,14 @@ export default class Distraught {
 
         this.camera = new THREE.PerspectiveCamera(60, container.clientWidth / container.clientHeight, 0.1, 2000);
 
-        this.renderer = new THREE.WebGLRenderer({ antialias: true });
+        this.renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
         this.renderer.setSize(container.clientWidth, container.clientHeight);
         this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
         this.renderer.shadowMap.enabled = true;
-        this.renderer.shadowMap.type = THREE.PCFShadowMap;
-        this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        this.renderer.shadowMap.type    = THREE.PCFShadowMap;
+        this.renderer.toneMapping       = THREE.ACESFilmicToneMapping;
         this.renderer.toneMappingExposure = 1;
-        this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+        this.renderer.outputColorSpace  = THREE.SRGBColorSpace;
         container.appendChild(this.renderer.domElement);
 
         window.addEventListener('resize', this._onResize);
@@ -173,10 +219,10 @@ export default class Distraught {
         sun.position.set(15, 22, 12);
         sun.castShadow = true;
         sun.shadow.mapSize.set(4096, 4096);
-        sun.shadow.camera.near = 0.5;
-        sun.shadow.camera.far = 200;
-        sun.shadow.camera.left = sun.shadow.camera.bottom = -25;
-        sun.shadow.camera.right = sun.shadow.camera.top = 25;
+        sun.shadow.camera.near   = 0.5;
+        sun.shadow.camera.far    = 200;
+        sun.shadow.camera.left   = sun.shadow.camera.bottom = -25;
+        sun.shadow.camera.right  = sun.shadow.camera.top    =  25;
         sun.shadow.bias = -0.00005;
         this.scene.add(sun);
 
@@ -210,7 +256,8 @@ export default class Distraught {
         this.scene.add(this.contactShadow);
     }
 
-    // Model loading 
+    // Model loading
+
     private loadModel(): void {
         this._loadModel(this.opts.objFile, this.opts.mtlFile ?? '').catch(err => {
             this.opts.onError?.(err instanceof Error ? err : new Error(String(err)));
@@ -218,7 +265,7 @@ export default class Distraught {
     }
 
     private async _loadModel(objFile: string, mtlFile: string): Promise<void> {
-        const manager = new THREE.LoadingManager();
+        const manager   = new THREE.LoadingManager();
         const objLoader = new OBJLoader(manager);
 
         if (mtlFile) {
@@ -251,8 +298,8 @@ export default class Distraught {
     }
 
     private _finalizeModel(object: THREE.Object3D): void {
-        const box = new THREE.Box3().setFromObject(object);
-        const size = box.getSize(new THREE.Vector3());
+        const box    = new THREE.Box3().setFromObject(object);
+        const size   = box.getSize(new THREE.Vector3());
         const maxDim = Math.max(size.x, size.y, size.z);
         if (maxDim > 0) object.scale.setScalar(this.opts.modelSize / maxDim);
 
@@ -263,9 +310,10 @@ export default class Distraught {
 
         object.traverse(child => {
             if (!(child instanceof THREE.Mesh)) return;
-            child.castShadow = true;
+            child.castShadow    = true;
             child.receiveShadow = true;
             child.geometry.computeVertexNormals();
+
             const mats = Array.isArray(child.material) ? child.material : [child.material];
             mats.forEach((mat: THREE.Material) => {
                 if (!mat) return;
@@ -275,11 +323,12 @@ export default class Distraught {
                 if ('roughness' in std) std.roughness = Math.min(std.roughness, 0.6);
                 if ('metalness' in std) std.metalness = Math.max(std.metalness, 0.05);
 
-                // fix moiré — anisotropic filtering on every texture map
+                // fix moiré on textures
                 const maps: (THREE.Texture | null)[] = [
                     std.map, std.normalMap, std.roughnessMap,
                     std.metalnessMap, std.aoMap, std.emissiveMap,
                 ];
+
                 maps.forEach(tex => {
                     if (!tex) return;
                     tex.anisotropy  = maxAnisotropy;
@@ -293,33 +342,36 @@ export default class Distraught {
         });
 
         box.setFromObject(object);
-        const span = box.getSize(new THREE.Vector3()).length();
+        const span        = box.getSize(new THREE.Vector3()).length();
         const modelBottom = box.min.y;
 
         this.ground.position.y = modelBottom;
-        this.grid.position.y = modelBottom + 0.01;
+        this.grid.position.y   = modelBottom + 0.01;
 
         const sw = Math.max(box.max.x - box.min.x, 1.5) * 1.3;
         const sd = Math.max(box.max.z - box.min.z, 1.5) * 1.3;
+
         this.contactShadow.position.set(
             (box.min.x + box.max.x) * 0.5,
             modelBottom + 0.002,
             (box.min.z + box.max.z) * 0.5,
         );
+
         this.contactShadow.scale.set(sw, sd, 1);
 
         this.cameraDistance = this.targetDistance = span * 1.5;
-        this.minDistance = span * 0.5;
-        this.maxDistance = span * 5;
+        this.minDistance    = span * 0.5;
+        this.maxDistance    = span * 5;
         this.panTarget.set(0, 0, 0);
         this.resetView();
     }
 
     // Camera
+
     private updateCamera(): void {
         this.cameraDistance += (this.targetDistance - this.cameraDistance) * ZOOM_SMOOTH;
-        this.cameraTheta += (this.targetTheta - this.cameraTheta) * ORBIT_SMOOTH;
-        this.cameraPhi += (this.targetPhi - this.cameraPhi) * ORBIT_SMOOTH;
+        this.cameraTheta    += (this.targetTheta    - this.cameraTheta)    * ORBIT_SMOOTH;
+        this.cameraPhi      += (this.targetPhi      - this.cameraPhi)      * ORBIT_SMOOTH;
 
         const r = this.cameraDistance;
         const x = r * Math.sin(this.cameraPhi) * Math.cos(this.cameraTheta);
@@ -338,42 +390,52 @@ export default class Distraught {
         const right = new THREE.Vector3().setFromMatrixColumn(this.camera.matrixWorld, 0);
         right.y = 0;
         right.normalize();
-        const up = new THREE.Vector3(0, 1, 0);
         const scale = PAN_DRAG_SPEED * this.cameraDistance;
-        this.panTarget.addScaledVector(right, -dx * scale);
-        this.panTarget.addScaledVector(up, dy * scale);
+        this.panTarget.addScaledVector(right,                   -dx * scale);
+        this.panTarget.addScaledVector(new THREE.Vector3(0,1,0), dy * scale);
     }
 
     // Controls
+
     private initControls(): void {
         const el = this.renderer.domElement;
-        el.addEventListener('pointerdown', this._onPointerDown);
-        el.addEventListener('pointermove', this._onPointerMove);
-        el.addEventListener('pointerup', this._onPointerUp);
+
+        el.addEventListener('pointerdown',   this._onPointerDown);
+        el.addEventListener('pointermove',   this._onPointerMove);
+        el.addEventListener('pointerup',     this._onPointerUp);
         el.addEventListener('pointercancel', this._onPointerUp);
-        el.addEventListener('wheel', this._onWheel, { passive: false });
-        el.addEventListener('touchstart', this._onTouchStart, { passive: false });
-        el.addEventListener('touchmove', this._onTouchMove, { passive: false });
-        el.addEventListener('touchend', () => { this.isPointerDown = false; this.touchMode = null; this.lastPinchDist = 0; });
+        el.addEventListener('wheel',         this._onWheel, { passive: false });
+        el.addEventListener('touchstart',    this._onTouchStart, { passive: false });
+        el.addEventListener('touchmove',     this._onTouchMove,  { passive: false });
+        el.addEventListener('touchend', () => {
+            this.isPointerDown = false;
+            this.touchMode     = null;
+            this.lastPinchDist = 0;
+        });
+        
         window.addEventListener('keydown', this._onKeyDown);
-        window.addEventListener('keyup', this._onKeyUp);
+        window.addEventListener('keyup',   this._onKeyUp);
     }
 
     // arrow functions preserve `this`
     private _onPointerDown = (e: PointerEvent): void => {
+        if (!this._interactive) return;
         if (e.pointerType !== 'mouse' || e.button !== 0) return;
         e.preventDefault();
-        this.isPointerDown = true;
-        this.activePointer = e.pointerId;
-        this.isPanning = e.shiftKey || this.isShiftPressed;
-        this.lastPointerX = e.clientX;
-        this.lastPointerY = e.clientY;
+        
+        this.isPointerDown  = true;
+        this.activePointer  = e.pointerId;
+        this.isPanning      = e.shiftKey || this.isShiftPressed;
+        this.lastPointerX   = e.clientX;
+        this.lastPointerY   = e.clientY;
         this.renderer.domElement.setPointerCapture(e.pointerId);
     };
 
     private _onPointerMove = (e: PointerEvent): void => {
+        if (!this._interactive) return;
         if (!this.isPointerDown || e.pointerId !== this.activePointer) return;
         e.preventDefault();
+        
         const dx = e.clientX - this.lastPointerX;
         const dy = e.clientY - this.lastPointerY;
 
@@ -381,7 +443,7 @@ export default class Distraught {
             this.panScreen(dx, dy);
         } else {
             this.targetTheta += dx * 0.005;
-            this.targetPhi = Math.max(0.05, Math.min(Math.PI / 2 - 0.02, this.targetPhi - dy * 0.005));
+            this.targetPhi    = Math.max(PHI_MIN, Math.min(PHI_MAX, this.targetPhi - dy * 0.005));
         }
 
         this.lastPointerX = e.clientX;
@@ -390,34 +452,38 @@ export default class Distraught {
 
     private _onPointerUp = (e: PointerEvent): void => {
         if (this.activePointer !== null && e.pointerId !== this.activePointer) return;
+        
         if (this.activePointer !== null && this.renderer.domElement.hasPointerCapture(this.activePointer)) {
             this.renderer.domElement.releasePointerCapture(this.activePointer);
         }
+        
         this.isPointerDown = false;
-        this.isPanning = false;
+        this.isPanning     = false;
         this.activePointer = null;
     };
 
     private _onWheel = (e: WheelEvent): void => {
+        if (!this._interactive) return;
         e.preventDefault();
         if (e.shiftKey || this.isShiftPressed) {
             const delta = Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
-            this.panTarget.y -= delta * SHIFT_WHEEL_PAN_SPEED * this.cameraDistance;
+            this.panTarget.y -= delta * SHIFT_WHEEL_PAN * this.cameraDistance;
             return;
         }
         this.targetDistance *= Math.exp(e.deltaY * 0.001);
-        this.targetDistance = Math.max(this.minDistance, Math.min(this.maxDistance, this.targetDistance));
+        this.targetDistance  = Math.max(this.minDistance, Math.min(this.maxDistance, this.targetDistance));
     };
 
     private _onTouchStart = (e: TouchEvent): void => {
+        if (!this._interactive) return;
         e.preventDefault();
         if (e.touches.length === 1) {
-            this.touchMode = 'orbit';
+            this.touchMode     = 'orbit';
             this.isPointerDown = true;
-            this.lastPointerX = e.touches[0].clientX;
-            this.lastPointerY = e.touches[0].clientY;
+            this.lastPointerX  = e.touches[0].clientX;
+            this.lastPointerY  = e.touches[0].clientY;
         } else if (e.touches.length === 2) {
-            this.touchMode = 'zoom';
+            this.touchMode     = 'zoom';
             this.isPointerDown = false;
             this.lastPinchDist = Math.hypot(
                 e.touches[0].clientX - e.touches[1].clientX,
@@ -427,29 +493,49 @@ export default class Distraught {
     };
 
     private _onTouchMove = (e: TouchEvent): void => {
+        if (!this._interactive) return;
         e.preventDefault();
         if (this.touchMode === 'orbit' && e.touches.length === 1 && this.isPointerDown) {
             const dx = e.touches[0].clientX - this.lastPointerX;
             const dy = e.touches[0].clientY - this.lastPointerY;
+            
             this.targetTheta += dx * 0.008;
-            this.targetPhi = Math.max(0.05, Math.min(Math.PI / 2 - 0.02, this.targetPhi - dy * 0.008));
+            this.targetPhi    = Math.max(PHI_MIN, Math.min(PHI_MAX, this.targetPhi - dy * 0.008));
             this.lastPointerX = e.touches[0].clientX;
             this.lastPointerY = e.touches[0].clientY;
+
         } else if (this.touchMode === 'zoom' && e.touches.length === 2) {
             const d = Math.hypot(
                 e.touches[0].clientX - e.touches[1].clientX,
                 e.touches[0].clientY - e.touches[1].clientY,
             );
+    
             if (this.lastPinchDist > 0) {
                 this.targetDistance *= this.lastPinchDist / d;
-                this.targetDistance = Math.max(this.minDistance, Math.min(this.maxDistance, this.targetDistance));
+                this.targetDistance  = Math.max(
+                    this.minDistance,
+                    Math.min(
+                        this.maxDistance,
+                        this.targetDistance
+                    )
+                );
             }
+    
             this.lastPinchDist = d;
         }
     };
 
-    private _onKeyDown = (e: KeyboardEvent): void => { if (e.key === 'Shift') this.isShiftPressed = true; };
-    private _onKeyUp = (e: KeyboardEvent): void => { if (e.key === 'Shift') this.isShiftPressed = false; };
+    private _onKeyDown = (e: KeyboardEvent): void => {
+        if (e.key === 'Shift') {
+            this.isShiftPressed = true;
+        }
+    };
+    
+    private _onKeyUp   = (e: KeyboardEvent): void => {
+        if (e.key === 'Shift') {
+            this.isShiftPressed = false;
+        }
+    };
 
     private _onResize = (): void => {
         const el = this.renderer.domElement.parentElement!;
@@ -458,7 +544,8 @@ export default class Distraught {
         this.renderer.setSize(el.clientWidth, el.clientHeight);
     };
 
-    // Animation loop 
+    // Animation loop
+
     private loop = (): void => {
         this.rafId = requestAnimationFrame(this.loop);
         this.updateCamera();
@@ -466,18 +553,21 @@ export default class Distraught {
     };
 
     // Helpers
+
     private _makeContactShadow(): THREE.Mesh {
         const canvas = document.createElement('canvas');
         canvas.width = canvas.height = 1024;
         const ctx = canvas.getContext('2d')!;
-        const cx = canvas.width / 2, cy = canvas.height / 2, r = canvas.width / 2;
-        const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
-        g.addColorStop(0, 'rgba(0,0,0,0.85)');
+        const cx  = canvas.width / 2;
+        const cy  = canvas.height / 2;
+        const r   = canvas.width / 2;
+        const g   = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+        g.addColorStop(0,   'rgba(0,0,0,0.85)');
         g.addColorStop(0.2, 'rgba(0,0,0,0.60)');
         g.addColorStop(0.4, 'rgba(0,0,0,0.35)');
         g.addColorStop(0.6, 'rgba(0,0,0,0.15)');
         g.addColorStop(0.8, 'rgba(0,0,0,0.05)');
-        g.addColorStop(1, 'rgba(0,0,0,0)');
+        g.addColorStop(1,   'rgba(0,0,0,0)');
         ctx.fillStyle = g;
         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -491,7 +581,8 @@ export default class Distraught {
                 depthWrite: false, side: THREE.DoubleSide, color: 0x000000,
             }),
         );
-        mesh.rotation.x = -Math.PI / 2;
+        
+        mesh.rotation.x  = -Math.PI / 2;
         mesh.renderOrder = 1;
         return mesh;
     }
