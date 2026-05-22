@@ -1,0 +1,33 @@
+#
+## Alias OBJ Material File
+# Exported from SketchUp, (c) 2000-2012 Trimble Navigation Limited
+
+newmtl Polished_Concrete_Old
+Ka 0.000000 0.000000 0.000000
+Kd 0.898039 0.898039 0.898039
+Ks 0.330000 0.330000 0.330000
+map_Kd นิ้วกลาง/Polished_Concrete_Old.jpg
+
+newmtl Quartz_Light_Grey
+Ka 0.000000 0.000000 0.000000
+Kd 0.984314 0.984314 0.988235
+Ks 0.330000 0.330000 0.330000
+map_Kd นิ้วกลาง/Quartz_Light_Grey.jpg
+
+newmtl Translucent_Glass_Gray
+Ka 0.000000 0.000000 0.000000
+Kd 0.501961 0.501961 0.501961
+Ks 0.330000 0.330000 0.330000
+d 0.500000
+
+newmtl Polished_Concrete_New
+Ka 0.000000 0.000000 0.000000
+Kd 0.784314 0.784314 0.796078
+Ks 0.330000 0.330000 0.330000
+map_Kd นิ้วกลาง/Polished_Concrete_New.jpg
+
+newmtl FrontColor
+Ka 0.000000 0.000000 0.000000
+Kd 1.000000 1.000000 1.000000
+Ks 0.330000 0.330000 0.330000
+
